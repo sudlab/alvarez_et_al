@@ -1,5 +1,7 @@
 # Pipeline and code for Alvarez-Benayas, Katsarou and Trasanidis *et al* #
 
+**This code is provided as is as a record, for documentation purposes. It allows the interested reader to dig into the exact details of how we conducted our analyses. While it is entirely possible that much of the code here will run on other systems, we provide no guarentees, nor support.**
+
 This pipeline is created in the ruffus (http://www.ruffus.org.uk/) and cgatcore (https://cgat-core.readthedocs.io/en/latest/) frameworks. See there documentation to understand how pipeline script files. 
 
 The script `pipeline_atacseq.py` contains the pipeline logic.
