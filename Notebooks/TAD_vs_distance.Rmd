@@ -1,0 +1,233 @@
+---
+title: "Comparison of correlation inside and outside of TADs"
+output: html_notebook
+---
+
+InTAD can isolate significant correlations between enhancers and genes, but are these correlations stronger than we would predict? One possibility is to ask if correlations between genes and enhnacers in TADs are more like to be positive/stronger than those of a similar distance, but not in the same TAD. 
+
+To do this, we will perform two analyses - first run InTAD as normal on the signficant genes and enhancers. Secondly, we will replace the function in InTAD that assigns Gene-Region pair to test with one that uses purely distance, rather than being in the same TAD. 
+
+We will do this on the pan-MM regions/genes.
+
+
+```{r}
+library(GenomicFeatures)
+library(EnsDb.Hsapiens.v86)
+library(dplyr)
+library(tidyr)
+atac_data <- read.delim("../data/collapsed_PC_analysis/MM_PC_consensus_peaks_rlogs.tsv.gz",
+                        stringsAsFactors=FALSE) %>%
+  separate(id, into=c("chr", "start", "end")) %>%
+  mutate(start = as.numeric(start),
+         end = as.numeric(end))
+rnaseq_data <- read.delim("../data/collapsed_PC_analysis/MM_PC_genes_rlogs.tsv.gz")
+de_genes <- read.delim("../data/pan_MM_differential_genes.tsv", 
+                       stringsAsFactors = FALSE) %>% 
+  rowwise() %>%
+  dplyr::filter(padj < 0.1,
+         abs(log2FoldChange) >= 1.5)
+
+de_regions <- read.delim("../data/pan_MM_differential_ATAC-seq_regions_no_TSS.tsv")
+
+atac_data <- atac_data %>%
+  inner_join(dplyr::select(de_regions, chr, start, end))
+rnaseq_data <- rnaseq_data[rnaseq_data$id %in% de_genes$id,]
+rownames(rnaseq_data) = rnaseq_data$id
+atac_granges <- GRanges(atac_data)
+seqlevelsStyle(EnsDb.Hsapiens.v86) <- "UCSC"
+gene_granges <- genes(EnsDb.Hsapiens.v86, filter=GeneIdFilter(rownames(rnaseq_data)))
+atac_data <- atac_data[,-c(1:3)]
+```
+
+The column names of the atac data need to match the colnames of the rnaseq data, which at the moment they don't. So we need to map the samples using the table "Samples.txt" from Useful tables. 
+
+```{r}
+library(tidyr)
+atac_rna_sample_mapping <- read.delim("../data/collapsed_PC_analysis/samples_ATAC_RNA.tsv",stringsAsFactors = FALSE) %>%
+  filter(MM_or_ND != "MM CL") %>%
+  mutate(Sample_ATAC_id = gsub(",", ".", Sample_ATAC_id))
+
+sample_info_atac <- data.frame(atac_sample=colnames(atac_data)) %>%
+  extract(atac_sample, into=c("atac_sample"), regex= "X(.+)") %>% 
+  mutate(atac_sample = paste0("A", atac_sample)) %>%
+  left_join(atac_rna_sample_mapping, by=c("atac_sample"="Sample_ATAC_id")) %>%
+  rename("rna_sample"=Sample_RNA_id) 
+
+colnames(atac_data) = sample_info_atac$rna_sample
+
+rnaseq_data = data.matrix(rnaseq_data[,-1])
+atac_data <- atac_data[, colnames(rnaseq_data)]
+rnaseq_data <- rnaseq_data[gene_granges$gene_id,]
+rownames(sample_info_atac) <- sample_info_atac$rna_sample
+sample_info_atac <- sample_info_atac[colnames(rnaseq_data),]
+summary(colnames(rnaseq_data) == colnames(atac_data))
+
+```
+
+Now we can create the InTAD object. As the counts are already logged, we need to tell it not to do that. As we are only using DE genes, there is no need to filter on expression. 
+
+```{r}
+library(InTAD)
+intad <- newSigInTAD(atac_data, atac_granges, rnaseq_data, gene_granges, sample_info_atac, performLog=FALSE, ncores=4 )
+```
+
+We start by doing the classic InTAD analysis, with enhancer-gene pairs within the same TAD. We will use TAD defined in GM12879 from Rao et al 2014, as downloaded from  the Yue lab 3D genome browser. 
+
+```{r}
+library(rtracklayer)
+GM12878_tabs <- import("../data/HiC/hg38/GM12878_Rao_2014-raw_TADs.txt", format="bed")
+```
+The final step in preparing the object is to apply the TADs to it. 
+
+```{r}
+intad_tads <- combineInTAD(intad, GM12878_tabs)
+```
+
+Now run the correlation for the within-TAD gene-region pairs.
+
+```{r}
+intad_corr <- findCorrelation(intad_tads, adj.pval = TRUE, plot.proportions = TRUE, method="pearson")
+```
+
+Now plot the results to check we get the same as was observed in the paper. 
+```{r}
+library(ggplot2)
+ggplot(intad_corr) + aes(cor, fill=qvalue<0.05) +
+  geom_histogram() + 
+  theme_bw(base_size=9) +
+  xlab("Gene/enhancer correlation") +
+  geom_vline(xintercept=0, col="grey50", lty=2) +
+  scale_fill_manual(values=c("FALSE"="grey25", "TRUE"="red"), labels=c("FALSE"="Not\nSign.", "TRUE"="Sign.\nCor"), name=NULL)
+```
+
+Okay, so thats the analysis using TADs. Now for the analysis using distance. I have created helper functions in intad_helpers.R to fill the appropirate slots in the intad object using distance, rather than TAD identity. 
+
+```{r}
+source("intad_helpers.R")
+intad_dist <- gene_signal_connections_1mb(intad)
+```
+
+Now we can compute the correlations
+
+```{r}
+intad_dist_corr <- findCorrelation(intad_dist, adj.pval = TRUE, plot.proportions = TRUE, method="pearson")
+```
+
+And plot the results as before:
+
+```{r}
+ggplot(intad_dist_corr) + aes(cor, fill=qvalue<0.05) +
+  geom_histogram() + 
+  theme_bw(base_size=9) +
+  xlab("Gene/enhancer correlation") +
+  geom_vline(xintercept=0, col="grey50", lty=2) +
+  scale_fill_manual(values=c("FALSE"="grey25", "TRUE"="red"), labels=c("FALSE"="Not\nSign.", "TRUE"="Sign.\nCor"), name=NULL)
+
+```
+
+
+It looks pretty similar, but how similar is it. The next step is to add a column with distances, and then one that says whether the interaction is within the same TAD or not. 
+```{r}
+bind_rows(intad_dist@signalConnections) %>%
+  dplyr::select(peakid, gene=geneid, distances) %>% 
+  right_join(intad_dist_corr) %>% 
+  mutate(InTAD = paste(peakid,gene) %in% paste(intad_corr$peakid, intad_corr$gene)) -> intad_dist_vs_tad
+
+ggplot(intad_dist_vs_tad) + aes(cut(distances,10), cor, fill = InTAD, col=InTAD) +
+#  geom_violin() +
+#  geom_boxplot(outlier.shape = NA)
+  geom_split_violin()  +
+  stat_summary(fun.data="mean_cl_boot", col="black", position=position_dodge(width=0.3),
+               geom="crossbar", width=0.2)
+#  geom_smooth()
+
+```
+
+```{r}
+
+intad_dist_vs_tad %>%
+  ggplot() + aes(distances) +
+  geom_histogram() +
+  facet_grid(InTAD~.)
+```
+
+
+
+```{r}
+intad_dist_vs_tad %>%
+  ggplot() + aes(x=cut(distances,10), y=cor, fill=InTAD) +
+  #geom_boxplot()
+  stat_summary(fun.data="mean_cl_boot", geom="crossbar", width=0.3, position=position_dodge(width=0.3))
+
+```
+
+```{r}
+intad_dist_vs_tad %>%
+  group_by(InTAD, cut(distances, 10)) %>%
+  summarise(mean(as.numeric(qvalue<0.05)))
+
+intad_dist_vs_tad %>%
+  group_by(cut(distances, 10)) %>%
+  summarise(p=wilcox.test(cor ~ InTAD)$p.value,
+            n=length(qvalue),
+            nInTAD=sum(InTAD),
+            nNotInTAD=sum(!InTAD),
+            fInTAD=sum(InTAD)/length(qvalue))
+
+```
+
+```{r}
+sample_equal <- function(x,y) {
+  n_intad = sum(x$InTAD)
+  n_nottad = sum(!x$InTAD)
+  n_sample = min(n_intad, n_nottad)
+  
+  group_by(x, InTAD) %>% slice_sample(n = n_sample)
+}
+
+intad_dist_vs_tad %>%
+  group_by(cut(distances, 8)) %>%
+  do(sample_equal(.)) %>% 
+  summarise(p=wilcox.test(pvalue ~ InTAD)$p.value,
+            n=length(qvalue),
+            sig_inTAD = sum(InTAD & qvalue <0.05)/sum(InTAD),
+            sig_notTAD = sum(!InTAD & qvalue<0.05)/sum(!InTAD),
+            cor_inTAD = mean(cor[InTAD]),
+            cor_notTAD = mean(cor[!InTAD]),
+            nInTAD=sum(InTAD),
+            nNotInTAD=sum(!InTAD),
+            fInTAD=sum(InTAD)/length(qvalue))
+
+
+```
+
+
+```{r}
+samples <- lapply(1:100, function(x) intad_dist_vs_tad %>%
+              group_by(cut(distances, 8)) %>%
+              do(sample_equal(.)))
+
+bind_rows(samples, .id="sample") %>% 
+  group_by(sample) %>%
+  summarise(p.qvalue=wilcox.test(qvalue ~ InTAD)$p.value,
+            p.sig=wilcox.test(as.numeric(qvalue <0.05) ~ InTAD)$p.value,
+            p.R2 = wilcox.test(I(cor^2) ~ InTAD)$p.value) -> wc_results_100_samples
+
+
+lapply(wc_results_100_samples, function(x) sum(x<0.05))
+colMeans(as.matrix(wc_results_100_samples[,-1]))
+ggplot(wc_results_100_samples) + aes(x=p.qvalue, y=p.R2) + 
+ # scale_x_log10() + 
+  geom_point()
+
+```
+```{r}
+save.image("TAD_vs_distance.RData")
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

@@ -1,0 +1,251 @@
+---
+title: "Linear Discinimant Analysis for MOFA results"
+output: html_notebook
+---
+
+This is an attempt to measure how well the MOFA seperates the different class by computing linear discriminants. 
+
+We will first calculate the Fisher's seperations for each of the LFs, we can then look at the Seperations for the linear dicriminatnts. First lets get the data
+
+```{r}
+library(tidyverse)
+LF_data <- read.delim("../phd_data/MOFA/samples_LFs_weights_matrix.tsv.gz", stringsAsFactors = F) %>%
+  extract(sample, regex="(.+)_([0-9].+)", into=c("subtype", "sample"))
+```
+
+Now we calculate group means and standard deviations
+
+```{r}
+LF_data %>%
+  group_by(factor, subtype) %>%
+  summarise(group_mean=mean(value),
+            group_sd=sd(value),
+            group_n=n()) -> LF_summary
+head(LF_summary)
+```
+
+Now for each LF, calculate the within and between group variance, and therefore the separtion.
+```{r}
+LF_summary %>%
+  filter(subtype != "MM_OTHER") %>%
+  group_by(factor) %>%
+  mutate(grand_mean=sum(group_n*group_mean)/sum(group_n),
+         group_deviance=(group_mean-grand_mean)^2) %>%
+  summarise(Var_within = sum((group_n-1)*group_sd^2)/(sum(group_n)-n()),
+            Var_between = sum(group_n*group_deviance ) /(sum(group_n) - n()),
+            seperation=Var_between/Var_within) -> combined_separations
+
+sum(combined_separations[combined_separations$factor %in% paste("LF", 1:5, sep=""),
+                         "seperation"])
+combined_separations
+```
+
+Wow! LF5 has a seperation of 22.27! lets visulaise that with some histograms.
+
+```{r}
+LF_data %>%
+  filter(factor=="LF5", subtype !="MM_OTHER") %>%
+  ggplot() + aes(value)+
+  facet_grid(subtype~.) +
+  geom_histogram() +
+  theme_bw()
+```
+We can also look at what the F-statistic is:
+
+```{r}
+factor_matrix <- LF_data %>%
+ 
+  pivot_wider(id_cols=c(subtype, sample),names_from=factor, values_from=value )
+anova(lm(LF5~subtype, data=factor_matrix))
+
+```
+
+
+Okay, lets try an LDA
+
+```{r, fig.width=3, fig.height=1.5}
+library(MASS)
+cbbPalette =  c("PC"="#000000", "MAF"="#E69F00", "CCND1"="#56B4E9", "MMSET"="#009E73", "#F0E442", 
+                "CD19- NPC"="grey40", "HD"="#0072B2","#D55E00", "MM_OTHER"="#CC79A7", "0"="white")
+
+lda.model <- lda(subtype ~ LF1+LF2+LF3+LF4+LF5, data=filter(factor_matrix,  subtype != "MM_OTHER"))
+ cbind(subtype = as.character(factor_matrix$subtype), 
+       as.data.frame(as.matrix(factor_matrix[,c(-1,-2)][,1:5]) %*% lda.model$scaling),
+       stringsAsFactors=FALSE) %>%
+   filter(subtype !="MM_OTHER") %>%
+   ggplot() + aes(x=LD1, y=LD2, colour=subtype)  +
+   geom_point() +
+   theme_bw(base_size = 10) +
+   scale_colour_manual(limits=unique(as.character(factor_matrix$subtype)),
+                       values=cbbPalette[unique(as.character(factor_matrix$subtype))],
+                       guide=FALSE) +
+   facet_zoom(xy=subtype %in% c("CCND1", "HD", "MMSET"), zoom.size=0.75, show.area = FALSE) +
+   theme(aspect.ratio = 1) -> g
+ggsave("../Figures/FigureS2e_CDA_plot_combined.png", g, width=3, height=1.5, unit="in", dpi=300)
+lda.model$svd^2
+lda.model$scaling
+print(g)
+```
+
+So the first descriminant, which is nearly just LF5 alone, is not much more than explaitory than LF5 alone, although its a bit nicer. The second is not that far off though, it is a significant imporvement on just the first one alone, and is mostly LF2 (so the PC vs MM comparison). Both have a non-zero amount of LF3 thrown in for good measure as well. 
+
+
+
+Now we do the same thing with the RNA only MOFA results.
+
+```{r}
+RNA_only_LF_data <- read.delim("../data/MOFA/RNA_only_samples_LFs_weights_matrix.tsv.gz")  %>%
+  extract(sample, regex="(.+)_([0-9].+)", into=c("subtype", "sample"))
+RNA_only_LF_data %>%
+  group_by(factor, subtype) %>%
+  summarise(group_mean=mean(value),
+            group_sd=sd(value),
+            group_n=n()) -> RNA_only_LF_summary
+head(RNA_only_LF_summary)
+```
+
+Okay, now we calcualte the seperations for the RNA only set:
+```{r}
+RNA_only_LF_summary %>%
+  filter(subtype != "MM_OTHER") %>%
+  group_by(factor) %>%
+  mutate(grand_mean=sum(group_n*group_mean)/sum(group_n),
+         group_deviance=(group_mean-grand_mean)^2) %>%
+  summarise(Var_within = sum((group_n-1)*group_sd^2)/(sum(group_n)-n()),
+            Var_between = sum(group_n*group_deviance ) /(sum(group_n) - n()),
+            seperation=Var_between/Var_within) -> RNA_only_separations
+
+sum(filter(RNA_only_separations, factor %in% paste("LF", 1:5, sep=""))$seperation)
+RNA_only_separations
+
+
+```
+
+I'm guessing that LF4 is the equivlent of LF5 in the combined MOFA. Here it has a seperation of 11.7, compared to 22 for the combined analysis. And even if we add in LF1, it only gets to 20, vs 28 for the combined analysis (LF5 + LF2).
+
+And the F-statistic:
+```{r}
+RNA_only_factor_matrix <- RNA_only_LF_data %>%
+ 
+  pivot_wider(id_cols=c(subtype, sample),names_from=factor, values_from=value )
+anova(lm(LF4~subtype, data=filter(RNA_only_factor_matrix, subtype != "MM_OTHER")))
+```
+
+F of 67.5 rather than 128!
+
+Now for the LDA
+
+```{r, fig.width=3, fig.height=1.5}
+library(ggforce)
+rna.lda.model <- lda(subtype ~ LF1+LF2+LF3+LF4+LF5, data=filter(RNA_only_factor_matrix, subtype != "MM_OTHER"))
+ cbind(subtype = RNA_only_factor_matrix$subtype, 
+       as.data.frame(as.matrix(RNA_only_factor_matrix[,c(-1,-2)][,1:5]) %*% rna.lda.model$scaling)) %>%
+   filter(subtype!="MM_OTHER") %>%
+   ggplot() + aes(x=LD1, y=LD2, col=subtype)  +
+   geom_point()  +
+   theme_bw(base_size = 10) +
+   scale_colour_manual(limits=unique(as.character(factor_matrix$subtype)),
+                       values=cbbPalette[unique(as.character(factor_matrix$subtype))],
+                       guide=FALSE) +
+   facet_zoom(xy=subtype %in% c("CCND1", "HD", "MMSET"), zoom.size=0.75, show.area = FALSE) +
+   theme(aspect.ratio = 1) ->g
+
+ggsave("../Figures/FigureS2f-CDAplot_RNA_only.png", g, width=3, height=1.5, unit="in", dpi=300)
+print(g)
+
+rna.lda.model$svd^2
+rna.lda.model$scaling
+```
+
+So, the F-statistics here are actaully better than in the combined analysis, but looking at the plots its clear the classification is not as good. So what about a more traditional measure of classification, like F1.
+
+```{r}
+f1_score <- function(predicted, expected, positive.class="1", return_all=FALSE) {
+    cm = as.matrix(table(expected, predicted))
+
+    precision <- diag(cm) / colSums(cm)
+    recall <- diag(cm) / rowSums(cm)
+    f1 <-  ifelse(precision + recall == 0, 0, 2 * precision * recall / (precision + recall))
+
+    #Assuming that F1 is zero when it's not possible compute it
+    f1[is.na(f1)] <- 0
+
+    names(f1) <- colnames(cm)
+    #Binary F1 or Multi-class macro-averaged F1
+    if (nlevels(expected) == 2) {
+      return(f1[positive.class])
+    } else if (return_all) {
+      return (f1)
+    } else {
+      return(mean(f1))
+    }
+
+}
+
+combined_predict = predict(lda.model, filter(factor_matrix, subtype !="MM_OTHER"))
+combinedf1 <- f1_score(combined_predict[["class"]], filter(factor_matrix, subtype !="MM_OTHER")$subtype, return_all=T )
+
+rna_only_predict = predict(rna.lda.model, filter(RNA_only_factor_matrix, subtype !="MM_OTHER"))
+rnaf1 <- f1_score(rna_only_predict$class, filter(RNA_only_factor_matrix, subtype !="MM_OTHER")$subtype, return_all=T)
+
+
+```
+
+
+Normally F1 would be calculated on a test set, rather than a training set - its possible that any combinations of groupings could be discriminanted. It doesn't mean that we've learnt something specific about the genetic subtypes. To fix this, I'm going to permute the labels, and look at the distribution of F1 scores.
+
+```{r}
+
+permute_f1 <- function(factor_matrix) {
+  factor_matrix$subtype <- sample(factor_matrix$subtype, size=length(factor_matrix$subtype))
+  perm.lda.model <-  lda(subtype ~ LF1+LF2+LF3+LF4+LF5, data=factor_matrix)
+  perm.lda.predict <- predict(perm.lda.model, factor_matrix)
+  perm.f1 <- f1_score(perm.lda.predict$class, factor_matrix$subtype)
+  return(perm.f1)
+}
+
+combined_random_f1s <- data.frame(f1=replicate(10000,permute_f1(filter(factor_matrix, subtype != "MM_OTHER"))))
+rna_only_random_f1s <- data.frame(f1=replicate(10000,permute_f1(filter(RNA_only_factor_matrix, subtype != "MM_OTHER"))))
+
+```
+
+We can visualise the results on histograms:
+
+```{r, fig.height=3, fig.width=3}
+combined_random_f1s %>%
+  ggplot() + aes(f1) + 
+  geom_histogram() +
+  theme_bw(base_size=10) +
+  annotate("segment", x=combinedf1, xend=combinedf1, y=150, yend=0, arrow=arrow(length=unit(0.125, "inches"))) +
+  scale_x_continuous(limits = c(0,1), name=expression(f[1]))
+
+```
+
+```{r, fig.height=3, fig.width=3}
+rna_only_random_f1s %>%
+  ggplot() + aes(f1) + 
+  geom_histogram() +
+  theme_bw(base_size=10) +
+  annotate("segment", x=rnaf1, xend=rnaf1, y=150, yend=0, arrow=arrow(length=unit(0.125, "inches"))) +
+  scale_x_continuous(limits = c(0,1), name=expression(f[1]))
+
+```
+
+```{r}
+table(predicted=rna_only_predict$class, expected=filter(RNA_only_factor_matrix, subtype!="MM_OTHER")$subtype)
+table(as.character(predict(rna.lda.model, filter(RNA_only_factor_matrix, subtype %in% c("CCND1", "HD", "MMSET")))$class),
+         filter(RNA_only_factor_matrix, subtype %in% c("CCND1", "HD", "MMSET"))$subtype)
+
+expected <- filter(RNA_only_factor_matrix, subtype %in% c("CCND1", "HD", "MMSET"))$subtype
+```
+
+```{r}
+
+table(predicted=combined_predict$class, expected=filter(factor_matrix, subtype!="MM_OTHER")$subtype)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
