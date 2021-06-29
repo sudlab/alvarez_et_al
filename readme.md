@@ -38,7 +38,7 @@ $ python setup.py develop
 
 You will need to configure the cgatcore frame work to work with your cluster. Do this by creating a `.cgat.yml` file in your home directory. An example is provided below
 
-    jobs_limit_db: 1
+```
     shared_tmpdir: /fastdata/mb1ims/tmp
     tmpdir: /scratch
 
@@ -48,6 +48,7 @@ You will need to configure the cgatcore frame work to work with your cluster. Do
         parallel_environment: smp
         memory_resource: rmem
         options: -P gen2reg
+```
 
 You can now run show the tasks to be run with `python PATH/TO/REPO/pipeline_atacseq.py show full` or run it with `python PATH/TO/REPO/pipeline_atacseq.py make full`.
 
